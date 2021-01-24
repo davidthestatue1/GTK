@@ -6,14 +6,14 @@ _OUT_ vec4 final_color;
 _OUT_ _GSK_ROUNDED_RECT_UNIFORM_ transformed_outline;
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
   vUv = vec2(aUv.x, aUv.y);
 
   final_color = gsk_premultiply(u_color) * u_alpha;
 
   GskRoundedRect outline = gsk_create_rect(u_outline_rect);
-  gsk_rounded_rect_transform(outline, u_modelview);
+  gsk_rounded_rect_transform(outline);
   gsk_rounded_rect_encode(outline, transformed_outline);
 }
 

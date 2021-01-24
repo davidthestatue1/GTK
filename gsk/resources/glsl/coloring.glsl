@@ -4,7 +4,7 @@ uniform vec4 u_color;
 _OUT_ vec4 final_color;
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
   vUv = vec2(aUv.x, aUv.y);
 

@@ -15,7 +15,7 @@ typedef enum
   OP_CHANGE_OPACITY                    =  1,
   OP_CHANGE_COLOR                      =  2,
   OP_CHANGE_PROJECTION                 =  3,
-  OP_CHANGE_MODELVIEW                  =  4,
+  OP_CHANGE_TRANSFORM                  =  4,
   OP_CHANGE_PROGRAM                    =  5,
   OP_CHANGE_RENDER_TARGET              =  6,
   OP_CHANGE_CLIP                       =  7,
@@ -42,6 +42,7 @@ typedef enum
   OP_CHANGE_GL_SHADER_ARGS             = 28,
   OP_CHANGE_EXTRA_SOURCE_TEXTURE       = 29,
   OP_CHANGE_CONIC_GRADIENT             = 30,
+  OP_CHANGE_SCALE                      = 31,
   OP_LAST
 } OpKind;
 
@@ -96,6 +97,11 @@ typedef struct
 {
   graphene_matrix_t matrix;
 } OpMatrix;
+
+typedef struct
+{
+  float scale[2];
+} OpScale;
 
 typedef struct
 {

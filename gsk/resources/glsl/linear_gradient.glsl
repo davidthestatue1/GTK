@@ -13,10 +13,10 @@ _OUT_ vec4 color_stops[6];
 _OUT_ float color_offsets[6];
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
-  startPoint = (u_modelview * vec4(u_start_point, 0, 1)).xy;
-  endPoint   = (u_modelview * vec4(u_end_point,   0, 1)).xy;
+  startPoint = u_scale * u_start_point;
+  endPoint = u_scale * u_end_point;
   maxDist    = length(endPoint - startPoint);
 
   // Gradient direction

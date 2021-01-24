@@ -13,23 +13,17 @@
 #include "opbuffer.h"
 
 #define GL_N_VERTICES 6
-#define GL_N_PROGRAMS 15
+#define GL_N_PROGRAMS 16
 #define GL_MAX_GRADIENT_STOPS 6
 
 typedef struct
 {
-  float scale_x;
-  float scale_y;
+  float scale_x_before;
+  float scale_y_before;
 
   float dx_before;
   float dy_before;
-} OpsMatrixMetadata;
-
-typedef struct
-{
-  GskTransform *transform;
-  OpsMatrixMetadata metadata;
-} MatrixStackEntry;
+} ModelviewState;
 
 typedef struct
 {
@@ -39,6 +33,9 @@ typedef struct
   int source_texture;
   graphene_rect_t viewport;
   float opacity;
+  float scale_x;
+  float scale_y;
+
   /* Per-program state */
   union {
     GdkRGBA color;
@@ -104,6 +101,7 @@ struct _Program
   int projection_location;
   int modelview_location;
   int clip_rect_location;
+  int scale_location;
   union {
     struct {
       int color_location;
@@ -179,6 +177,9 @@ struct _Program
       int texture_locations[4];
       GError *compile_error;
     } glshader;
+    struct {
+      int transform_location;
+    } transform;
   };
   ProgramState state;
 };
@@ -203,6 +204,7 @@ typedef struct {
       Program outset_shadow_program;
       Program repeat_program;
       Program unblurred_outset_shadow_program;
+      Program transform_program;
     };
   };
   GHashTable *custom_programs; /* GskGLShader -> Program* */
@@ -218,6 +220,7 @@ typedef struct
   graphene_matrix_t current_projection;
   graphene_rect_t current_viewport;
   float current_opacity;
+
   float dx, dy;
   float scale_x, scale_y;
 
@@ -228,7 +231,6 @@ typedef struct
 
   /* Stack of modelview matrices */
   GArray *mv_stack;
-  GskTransform *current_modelview;
 
   /* Same thing */
   GArray *clip_stack;
@@ -250,9 +252,17 @@ void              ops_push_debug_group    (RenderOpBuilder         *builder,
 void              ops_pop_debug_group     (RenderOpBuilder         *builder);
 
 void              ops_finish             (RenderOpBuilder         *builder);
-void              ops_push_modelview     (RenderOpBuilder         *builder,
-                                          GskTransform            *transform);
-void              ops_set_modelview      (RenderOpBuilder         *builder,
+void              ops_push_modelview     (RenderOpBuilder         *self,
+                                          const float              dx,
+                                          const float              dy,
+                                          const float              scale_x,
+                                          const float              scale_y);
+void              ops_set_modelview      (RenderOpBuilder         *self,
+                                          const float              dx,
+                                          const float              dy,
+                                          const float              scale_x,
+                                          const float              scale_y);
+void              ops_set_transform      (RenderOpBuilder         *self,
                                           GskTransform            *transform);
 void              ops_pop_modelview      (RenderOpBuilder         *builder);
 void              ops_set_program        (RenderOpBuilder         *builder,
@@ -345,7 +355,6 @@ GskQuadVertex *   ops_draw               (RenderOpBuilder        *builder,
 void              ops_offset             (RenderOpBuilder        *builder,
                                           float                   x,
                                           float                   y);
-
 gpointer          ops_begin              (RenderOpBuilder        *builder,
                                           OpKind                  kind);
 OpBuffer         *ops_get_buffer         (RenderOpBuilder        *builder);

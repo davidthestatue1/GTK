@@ -13,9 +13,9 @@ _OUT_ float start;
 _OUT_ float end;
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
-  center = (u_modelview * vec4(u_center, 0, 1)).xy;
+  center = u_scale * u_center;
   start = u_start;
   end = u_end;
 

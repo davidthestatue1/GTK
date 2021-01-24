@@ -79,9 +79,8 @@ ops_finish (RenderOpBuilder *builder)
   builder->dy = 0;
   builder->scale_x = 1;
   builder->scale_y = 1;
-  builder->current_modelview = NULL;
   builder->current_clip = NULL;
-  builder->clip_is_rectilinear = TRUE;
+  builder->clip_is_rectilinear = true;
   builder->current_render_target = 0;
   builder->current_texture = 0;
   builder->current_program = NULL;
@@ -121,83 +120,33 @@ ops_pop_debug_group (RenderOpBuilder *builder)
   ops_begin (builder, OP_POP_DEBUG_GROUP);
 }
 
-static void
-extract_matrix_metadata (GskTransform      *transform,
-                         OpsMatrixMetadata *md)
-{
-  float dummy;
-
-  switch (gsk_transform_get_category (transform))
-    {
-    case GSK_TRANSFORM_CATEGORY_IDENTITY:
-    case GSK_TRANSFORM_CATEGORY_2D_TRANSLATE:
-      md->scale_x = 1;
-      md->scale_y = 1;
-    break;
-
-    case GSK_TRANSFORM_CATEGORY_2D_AFFINE:
-      gsk_transform_to_affine (transform,
-                               &md->scale_x, &md->scale_y,
-                               &dummy, &dummy);
-    break;
-
-    case GSK_TRANSFORM_CATEGORY_UNKNOWN:
-    case GSK_TRANSFORM_CATEGORY_ANY:
-    case GSK_TRANSFORM_CATEGORY_3D:
-    case GSK_TRANSFORM_CATEGORY_2D:
-      {
-        graphene_vec3_t col1;
-        graphene_vec3_t col2;
-        graphene_matrix_t m;
-
-        gsk_transform_to_matrix (transform, &m);
-
-        /* TODO: 90% sure this is incorrect. But we should never hit this code
-         * path anyway. */
-        graphene_vec3_init (&col1,
-                            graphene_matrix_get_value (&m, 0, 0),
-                            graphene_matrix_get_value (&m, 1, 0),
-                            graphene_matrix_get_value (&m, 2, 0));
-
-        graphene_vec3_init (&col2,
-                            graphene_matrix_get_value (&m, 0, 1),
-                            graphene_matrix_get_value (&m, 1, 1),
-                            graphene_matrix_get_value (&m, 2, 1));
-
-        md->scale_x = graphene_vec3_length (&col1);
-        md->scale_y = graphene_vec3_length (&col2);
-      }
-    break;
-    default:
-      {}
-    }
-}
-
 void
-ops_transform_bounds_modelview (const RenderOpBuilder *builder,
+ops_transform_bounds_modelview (const RenderOpBuilder *self,
                                 const graphene_rect_t *src,
                                 graphene_rect_t       *dst)
 {
-  graphene_rect_t r = *src;
+  g_assert (self->mv_stack != NULL);
+  g_assert (self->mv_stack->len >= 1);
+  g_assert (src);
+  g_assert (dst);
 
-  g_assert (builder->mv_stack != NULL);
-  g_assert (builder->mv_stack->len >= 1);
-
-  r.origin.x += builder->dx;
-  r.origin.y += builder->dy;
-
-  gsk_transform_transform_bounds (builder->current_modelview, &r, dst);
+  dst->origin.x = (src->origin.x + self->dx) * self->scale_x;
+  dst->origin.y = (src->origin.y + self->dy) * self->scale_y;
+  dst->size.width = src->size.width * self->scale_x;
+  dst->size.height = src->size.height * self->scale_y;
 }
 
 void
-ops_init (RenderOpBuilder *builder)
+ops_init (RenderOpBuilder *self)
 {
-  memset (builder, 0, sizeof (*builder));
+  memset (self, 0, sizeof (*self));
 
-  builder->current_opacity = 1.0f;
+  self->current_opacity = 1.0f;
+  self->scale_x = 1.0f;
+  self->scale_y = 1.0f;
 
-  op_buffer_init (&builder->render_ops);
-  builder->vertices = g_array_new (FALSE, TRUE, sizeof (GskQuadVertex));
+  op_buffer_init (&self->render_ops);
+  self->vertices = g_array_new (FALSE, TRUE, sizeof (GskQuadVertex));
 }
 
 void
@@ -270,6 +219,22 @@ ops_has_clip (RenderOpBuilder *self)
          self->clip_stack->len > 1;
 }
 
+void
+ops_set_transform (RenderOpBuilder *self,
+                   GskTransform    *transform)
+{
+  OpMatrix *op;
+
+  op = ops_begin (self, OP_CHANGE_TRANSFORM);
+
+  g_assert (gsk_transform_get_category (transform) < GSK_TRANSFORM_CATEGORY_2D_AFFINE);
+
+  gsk_transform_to_matrix (transform, &op->matrix);
+
+  /* Apply our own offset */
+  graphene_matrix_translate (&op->matrix, &(graphene_point3d_t) { self->dx, self->dy, 0 });
+}
+
 /**
  * ops_set_modelview:
  * @builder
@@ -278,103 +243,83 @@ ops_has_clip (RenderOpBuilder *self)
  * This sets the modelview to the given one without looking at the
  * one that's currently set */
 void
-ops_set_modelview (RenderOpBuilder *builder,
-                   GskTransform    *transform)
+ops_set_modelview (RenderOpBuilder *self,
+                   const float      dx,
+                   const float      dy,
+                   const float      scale_x,
+                   const float      scale_y)
+
 {
-  MatrixStackEntry *entry;
+  ModelviewState *entry;
 
-  if (G_UNLIKELY (builder->mv_stack == NULL))
-    builder->mv_stack = g_array_new (FALSE, TRUE, sizeof (MatrixStackEntry));
+  g_assert (self);
 
-  g_assert (builder->mv_stack != NULL);
+  if (G_UNLIKELY (self->mv_stack == NULL))
+    self->mv_stack = g_array_new (false, true, sizeof (ModelviewState));
 
-  g_array_set_size (builder->mv_stack, builder->mv_stack->len + 1);
-  entry = &g_array_index (builder->mv_stack, MatrixStackEntry, builder->mv_stack->len - 1);
+  g_assert (self->mv_stack != NULL);
 
-  entry->transform = transform;
+  g_array_set_size (self->mv_stack, self->mv_stack->len + 1);
+  entry = &g_array_index (self->mv_stack, ModelviewState, self->mv_stack->len - 1);
 
-  entry->metadata.dx_before = builder->dx;
-  entry->metadata.dy_before = builder->dy;
-  extract_matrix_metadata (entry->transform, &entry->metadata);
+  entry->dx_before = self->dx;
+  entry->dy_before = self->dy;
+  entry->scale_x_before = self->scale_x;
+  entry->scale_y_before = self->scale_y;
 
-  builder->dx = 0;
-  builder->dy = 0;
-  builder->current_modelview = entry->transform;
-  builder->scale_x = entry->metadata.scale_x;
-  builder->scale_y = entry->metadata.scale_y;
+  self->dx = dx;
+  self->dy = dy;
+  self->scale_x = scale_x;
+  self->scale_y = scale_y;
 }
 
-/* This sets the given modelview to the one we get when multiplying
- * the given modelview with the current one. */
 void
-ops_push_modelview (RenderOpBuilder *builder,
-                    GskTransform    *transform)
+ops_push_modelview (RenderOpBuilder *self,
+                    const float      dx,
+                    const float      dy,
+                    const float      scale_x,
+                    const float      scale_y)
 {
-  MatrixStackEntry *entry;
+  ModelviewState *entry;
 
-  if (G_UNLIKELY (builder->mv_stack == NULL))
-    builder->mv_stack = g_array_new (FALSE, TRUE, sizeof (MatrixStackEntry));
+  g_assert (self);
 
-  g_assert (builder->mv_stack != NULL);
+  if (G_UNLIKELY (self->mv_stack == NULL))
+    self->mv_stack = g_array_new (false, true, sizeof (ModelviewState));
 
-  g_array_set_size (builder->mv_stack, builder->mv_stack->len + 1);
-  entry = &g_array_index (builder->mv_stack, MatrixStackEntry, builder->mv_stack->len - 1);
+  g_assert (self->mv_stack != NULL);
 
-  if (G_LIKELY (builder->mv_stack->len >= 2))
-    {
-      const MatrixStackEntry *cur;
-      GskTransform *t = NULL;
+  g_array_set_size (self->mv_stack, self->mv_stack->len + 1);
+  entry = &g_array_index (self->mv_stack, ModelviewState, self->mv_stack->len - 1);
 
-      cur = &g_array_index (builder->mv_stack, MatrixStackEntry, builder->mv_stack->len - 2);
-      /* Multiply given matrix with current modelview */
+  entry->dx_before = self->dx;
+  entry->dy_before = self->dy;
+  entry->scale_x_before = self->scale_x;
+  entry->scale_y_before = self->scale_y;
 
-      t = gsk_transform_translate (gsk_transform_ref (cur->transform),
-                                   &(graphene_point_t) { builder->dx, builder->dy});
-      t = gsk_transform_transform (t, transform);
-      entry->transform = t;
-    }
-  else
-    {
-      entry->transform = gsk_transform_ref (transform);
-    }
-
-  entry->metadata.dx_before = builder->dx;
-  entry->metadata.dy_before = builder->dy;
-  extract_matrix_metadata (entry->transform, &entry->metadata);
-
-  builder->dx = 0;
-  builder->dy = 0;
-  builder->scale_x = entry->metadata.scale_x;
-  builder->scale_y = entry->metadata.scale_y;
-  builder->current_modelview = entry->transform;
+  /* This version is additive */
+  self->dx += dx;
+  self->dy += dy;
+  self->scale_x = scale_x * self->scale_x;
+  self->scale_y = scale_y * self->scale_y;
 }
 
 void
 ops_pop_modelview (RenderOpBuilder *builder)
 {
-  const MatrixStackEntry *head;
+  const ModelviewState *head;
 
   g_assert (builder->mv_stack);
   g_assert (builder->mv_stack->len >= 1);
 
-  head = &g_array_index (builder->mv_stack, MatrixStackEntry, builder->mv_stack->len - 1);
-  builder->dx = head->metadata.dx_before;
-  builder->dy = head->metadata.dy_before;
-  gsk_transform_unref (head->transform);
+  head = &g_array_index (builder->mv_stack, ModelviewState, builder->mv_stack->len - 1);
+  builder->dx = head->dx_before;
+  builder->dy = head->dy_before;
+  builder->scale_x = head->scale_x_before;
+  builder->scale_y = head->scale_y_before;
 
   builder->mv_stack->len --;
-  head = &g_array_index (builder->mv_stack, MatrixStackEntry, builder->mv_stack->len - 1);
-
-  if (builder->mv_stack->len >= 1)
-    {
-      builder->scale_x = head->metadata.scale_x;
-      builder->scale_y = head->metadata.scale_y;
-      builder->current_modelview = head->transform;
-    }
-  else
-    {
-      builder->current_modelview = NULL;
-    }
+  head = &g_array_index (builder->mv_stack, ModelviewState, builder->mv_stack->len - 1);
 }
 
 graphene_matrix_t
@@ -635,15 +580,14 @@ ops_draw (RenderOpBuilder     *builder,
       program_state->projection = builder->current_projection;
     }
 
-  if (program_state->modelview == NULL ||
-      !gsk_transform_equal (builder->current_modelview, program_state->modelview))
+  if (program_state->scale_x != builder->scale_x ||
+      program_state->scale_y != builder->scale_y)
     {
-      OpMatrix *opm;
-
-      opm = ops_begin (builder, OP_CHANGE_MODELVIEW);
-      gsk_transform_to_matrix (builder->current_modelview, &opm->matrix);
-      gsk_transform_unref (program_state->modelview);
-      program_state->modelview = gsk_transform_ref (builder->current_modelview);
+      OpScale *op_s = ops_begin (builder, OP_CHANGE_SCALE);
+      op_s->scale[0] = builder->scale_x;
+      op_s->scale[1] = builder->scale_y;
+      program_state->scale_x = builder->scale_x;
+      program_state->scale_y = builder->scale_y;
     }
 
   if (!rect_equal (&builder->current_viewport, &program_state->viewport))

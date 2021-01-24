@@ -1,6 +1,6 @@
 uniform sampler2D u_source;
 uniform mat4 u_projection;
-uniform mat4 u_modelview;
+uniform vec2 u_scale;
 uniform float u_alpha;// = 1.0;
 uniform vec4 u_viewport;
 uniform vec4[3] u_clip_rect;

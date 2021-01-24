@@ -8,15 +8,15 @@ _OUT_ _GSK_ROUNDED_RECT_UNIFORM_ transformed_outside_outline;
 _OUT_ _GSK_ROUNDED_RECT_UNIFORM_ transformed_inside_outline;
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
   final_color = gsk_premultiply(u_color) * u_alpha;
 
   GskRoundedRect outside = gsk_create_rect(u_outline_rect);
   GskRoundedRect inside = gsk_rounded_rect_shrink (outside, u_widths);
 
-  gsk_rounded_rect_transform(outside, u_modelview);
-  gsk_rounded_rect_transform(inside, u_modelview);
+  gsk_rounded_rect_transform(outside);
+  gsk_rounded_rect_transform(inside);
 
   gsk_rounded_rect_encode(outside, transformed_outside_outline);
   gsk_rounded_rect_encode(inside, transformed_inside_outline);

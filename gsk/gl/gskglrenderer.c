@@ -68,9 +68,9 @@
               }G_STMT_END
 
 static Program *gsk_gl_renderer_lookup_custom_program (GskGLRenderer  *self,
-                                                       GskGLShader *shader);
+                                                       GskGLShader    *shader);
 static Program *gsk_gl_renderer_create_custom_program (GskGLRenderer  *self,
-                                                       GskGLShader *shader);
+                                                       GskGLShader    *shader);
 
 typedef enum
 {
@@ -326,37 +326,6 @@ gsk_rounded_rect_shrink_to_minimum (GskRoundedRect *self)
                                   self->corner[3].width + self->corner[2].width);
   self->bounds.size.height = MAX (self->corner[0].height + self->corner[3].height,
                                   self->corner[1].height + self->corner[2].height);
-}
-
-static inline gboolean G_GNUC_PURE
-node_supports_transform (GskRenderNode *node)
-{
-  /* Some nodes can't handle non-trivial transforms without being
-   * rendered to a texture (e.g. rotated clips, etc.). Some however
-   * work just fine, mostly because they already draw their child
-   * to a texture and just render the texture manipulated in some
-   * way, think opacity or color matrix. */
-  const guint node_type = gsk_render_node_get_node_type (node);
-
-  switch (node_type)
-    {
-      case GSK_COLOR_NODE:
-      case GSK_OPACITY_NODE:
-      case GSK_COLOR_MATRIX_NODE:
-      case GSK_TEXTURE_NODE:
-      case GSK_CROSS_FADE_NODE:
-      case GSK_LINEAR_GRADIENT_NODE:
-      case GSK_DEBUG_NODE:
-      case GSK_TEXT_NODE:
-        return TRUE;
-
-      case GSK_TRANSFORM_NODE:
-        return node_supports_transform (gsk_transform_node_get_child (node));
-
-      default:
-        return FALSE;
-    }
-  return FALSE;
 }
 
 static inline void
@@ -1150,7 +1119,7 @@ compile_glshader (GskGLRenderer  *self,
   INIT_COMMON_UNIFORM_LOCATION (program, clip_rect);
   INIT_COMMON_UNIFORM_LOCATION (program, viewport);
   INIT_COMMON_UNIFORM_LOCATION (program, projection);
-  INIT_COMMON_UNIFORM_LOCATION (program, modelview);
+  INIT_COMMON_UNIFORM_LOCATION (program, scale);
   program->glshader.size_location = glGetUniformLocation(program->id, "u_size");
   program->glshader.texture_locations[0] = glGetUniformLocation(program->id, "u_texture1");
   program->glshader.texture_locations[1] = glGetUniformLocation(program->id, "u_texture2");
@@ -1328,12 +1297,18 @@ render_transform_node (GskGLRenderer   *self,
 
     case GSK_TRANSFORM_CATEGORY_2D_AFFINE:
       {
-        ops_push_modelview (builder, node_transform);
+        float dx, dy, scale_x, scale_y;
+
+        gsk_transform_to_affine (node_transform, &scale_x, &scale_y, &dx, &dy);
+
+        ops_push_modelview (builder, dx, dy, scale_x, scale_y);
         gsk_gl_renderer_add_render_ops (self, child, builder);
         ops_pop_modelview (builder);
       }
     break;
 
+    /* For non-affine transforms, we draw everything on a texture and then
+     * draw the texture transformed. */
     case GSK_TRANSFORM_CATEGORY_2D:
     case GSK_TRANSFORM_CATEGORY_3D:
     case GSK_TRANSFORM_CATEGORY_ANY:
@@ -1341,42 +1316,34 @@ render_transform_node (GskGLRenderer   *self,
       {
         TextureRegion region;
         gboolean is_offscreen;
+        int filter_flag = 0;
 
-        if (node_supports_transform (child))
+        if (!result_is_axis_aligned (node_transform, &child->bounds))
+          filter_flag = LINEAR_FILTER;
+
+        if (add_offscreen_ops (self, builder,
+                               &child->bounds,
+                               child,
+                               &region, &is_offscreen,
+                               RESET_CLIP | filter_flag))
           {
-            ops_push_modelview (builder, node_transform);
-            gsk_gl_renderer_add_render_ops (self, child, builder);
-            ops_pop_modelview (builder);
-          }
-        else
-          {
-            int filter_flag = 0;
+            const float dx = builder->dx;
+            const float dy = builder->dy;
 
-            if (!result_is_axis_aligned (node_transform, &child->bounds))
-              filter_flag = LINEAR_FILTER;
+            ops_set_program (builder, &self->programs->transform_program);
+            ops_set_transform (builder, node_transform);
+            ops_set_texture (builder, region.texture_id);
 
-            if (add_offscreen_ops (self, builder,
-                                   &child->bounds,
-                                   child,
-                                   &region, &is_offscreen,
-                                   RESET_CLIP | filter_flag))
-              {
-                /* For non-trivial transforms, we draw everything on a texture and then
-                 * draw the texture transformed. */
-                /* TODO: We should compute a modelview containing only the "non-trivial"
-                 *       part (e.g. the rotation) and use that. We want to keep the scale
-                 *       for the texture.
-                 */
-                ops_push_modelview (builder, node_transform);
-                ops_set_texture (builder, region.texture_id);
-                ops_set_program (builder, &self->programs->blit_program);
-
-                load_vertex_data_with_region (ops_draw (builder, NULL),
-                                              &child->bounds, builder,
-                                              &region,
-                                              is_offscreen);
-                ops_pop_modelview (builder);
-              }
+            /* Quickly resetting these since ops_set_transform() adds them to the matrix
+             * and we don't want the geometry we're about to add picking the wrong offset */
+            builder->dx = 0;
+            builder->dy = 0;
+            load_vertex_data_with_region (ops_draw (builder, NULL),
+                                          &child->bounds, builder,
+                                          &region,
+                                          is_offscreen);
+            builder->dx = dx;
+            builder->dy = dy;
           }
       }
       break;
@@ -1843,7 +1810,7 @@ blur_texture (GskGLRenderer       *self,
 
   ops_set_program (builder, &self->programs->blur_program);
   prev_projection = ops_set_projection (builder, &item_proj);
-  ops_set_modelview (builder, NULL);
+  ops_set_modelview (builder, 0, 0, 1, 1);
   prev_viewport = ops_set_viewport (builder, &new_clip.bounds);
   ops_push_clip (builder, &new_clip);
 
@@ -2091,7 +2058,7 @@ render_inset_shadow_node (GskGLRenderer   *self,
                               &GRAPHENE_RECT_INIT (0, 0, texture_width, texture_height));
 
       prev_projection = ops_set_projection (builder, &item_proj);
-      ops_set_modelview (builder, NULL);
+      ops_set_modelview (builder, 0, 0, 1, 1);
       prev_viewport = ops_set_viewport (builder, &GRAPHENE_RECT_INIT (0, 0, texture_width, texture_height));
       ops_push_clip (builder, &GSK_ROUNDED_RECT_INIT (0, 0, texture_width, texture_height));
 
@@ -2282,6 +2249,9 @@ render_outset_shadow_node (GskGLRenderer   *self,
   texture_width  = (int)ceil ((scaled_outline.bounds.size.width  + blur_extra) * scale_x);
   texture_height = (int)ceil ((scaled_outline.bounds.size.height + blur_extra) * scale_y);
 
+  if (texture_width <= 0 || texture_height <= 0)
+    return;
+
   scaled_outline.bounds.origin.x = extra_blur_pixels;
   scaled_outline.bounds.origin.y = extra_blur_pixels;
   scaled_outline.bounds.size.width = texture_width - (extra_blur_pixels * 2);
@@ -2325,7 +2295,7 @@ render_outset_shadow_node (GskGLRenderer   *self,
       prev_render_target = ops_set_render_target (builder, render_target);
       ops_begin (builder, OP_CLEAR);
       prev_projection = ops_set_projection (builder, &item_proj);
-      ops_set_modelview (builder, NULL);
+      ops_set_modelview (builder, 0, 0, 1, 1);
       prev_viewport = ops_set_viewport (builder, &GRAPHENE_RECT_INIT (0, 0, texture_width, texture_height));
 
       /* Draw outline */
@@ -2833,18 +2803,26 @@ apply_viewport_op (const Program    *program,
 }
 
 static inline void
-apply_modelview_op (const Program  *program,
+apply_scale_op (const Program *program,
+                const OpScale *op)
+{
+  OP_PRINT (" -> Scale %f, %f", op->scale[0], op->scale[1]);
+  glUniform2f (program->scale_location, op->scale[0], op->scale[1]);
+}
+
+static inline void
+apply_transform_op (const Program  *program,
                     const OpMatrix *op)
 {
   float mat[16];
 
   graphene_matrix_to_float (&op->matrix, mat);
-  OP_PRINT (" -> Modelview { { %f,%f,%f,%f }, { %f,%f,%f,%f }, { %f,%f,%f,%f }, { %f,%f,%f,%f }",
+  OP_PRINT (" -> Transform { { %f,%f,%f,%f }, { %f,%f,%f,%f }, { %f,%f,%f,%f }, { %f,%f,%f,%f }",
             mat[0], mat[1], mat[2], mat[3],
             mat[4], mat[5], mat[6], mat[7],
             mat[8], mat[9], mat[10], mat[11],
             mat[12], mat[13], mat[14], mat[15]);
-  glUniformMatrix4fv (program->modelview_location, 1, GL_FALSE, mat);
+  glUniformMatrix4fv (program->transform.transform_location, 1, GL_FALSE, mat);
 }
 
 static inline void
@@ -2863,7 +2841,7 @@ apply_projection_op (const Program  *program,
 }
 
 static inline void
-apply_program_op (const Program  *program,
+apply_program_op (const Program   *program,
                   const OpProgram *op)
 {
   OP_PRINT (" -> Program: %d", op->program->index);
@@ -3320,6 +3298,7 @@ gsk_gl_renderer_create_programs (GskGLRenderer  *self,
     { "/org/gtk/libgsk/glsl/outset_shadow.glsl",             "outset shadow" },
     { "/org/gtk/libgsk/glsl/repeat.glsl",                    "repeat" },
     { "/org/gtk/libgsk/glsl/unblurred_outset_shadow.glsl",   "unblurred_outset shadow" },
+    { "/org/gtk/libgsk/glsl/transform.glsl",                 "transform" },
   };
 
   gsk_gl_shader_builder_init (&shader_builder,
@@ -3353,7 +3332,7 @@ gsk_gl_renderer_create_programs (GskGLRenderer  *self,
       INIT_COMMON_UNIFORM_LOCATION (prog, clip_rect);
       INIT_COMMON_UNIFORM_LOCATION (prog, viewport);
       INIT_COMMON_UNIFORM_LOCATION (prog, projection);
-      INIT_COMMON_UNIFORM_LOCATION (prog, modelview);
+      INIT_COMMON_UNIFORM_LOCATION (prog, scale);
     }
   /* color */
   INIT_PROGRAM_UNIFORM_LOCATION (color, color);
@@ -3423,6 +3402,8 @@ gsk_gl_renderer_create_programs (GskGLRenderer  *self,
   INIT_PROGRAM_UNIFORM_LOCATION (repeat, child_bounds);
   INIT_PROGRAM_UNIFORM_LOCATION (repeat, texture_rect);
 
+  /* transform */
+  INIT_PROGRAM_UNIFORM_LOCATION (transform, transform);
 
   /* We initialize the alpha uniform here, since the default value is important.
    * We can't do it in the shader like a reasonable person would because that doesn't
@@ -3431,6 +3412,7 @@ gsk_gl_renderer_create_programs (GskGLRenderer  *self,
     {
       glUseProgram(programs->programs[i].id);
       glUniform1f (programs->programs[i].alpha_location, 1.0);
+      glUniform2f (programs->programs[i].scale_location, 1.0, 1.0);
     }
 
 out:
@@ -3928,13 +3910,9 @@ add_offscreen_ops (GskGLRenderer         *self,
   /* Clear since we use this rendertarget for the first time */
   ops_begin (builder, OP_CLEAR);
   prev_projection = ops_set_projection (builder, &item_proj);
-  ops_set_modelview (builder, gsk_transform_scale (NULL, scale_x, scale_y));
   prev_viewport = ops_set_viewport (builder, &viewport);
   if (flags & RESET_CLIP)
     ops_push_clip (builder, &GSK_ROUNDED_RECT_INIT_FROM_RECT (viewport));
-
-  builder->dx = dx;
-  builder->dy = dy;
 
   prev_opacity = ops_set_opacity (builder, 1.0);
 
@@ -3955,14 +3933,10 @@ add_offscreen_ops (GskGLRenderer         *self,
 
   ops_set_opacity (builder, prev_opacity);
 
-  builder->dx = dx;
-  builder->dy = dy;
-
   if (flags & RESET_CLIP)
     ops_pop_clip (builder);
 
   ops_set_viewport (builder, &prev_viewport);
-  ops_pop_modelview (builder);
   ops_set_projection (builder, &prev_projection);
   ops_set_render_target (builder, prev_render_target);
 
@@ -4027,12 +4001,16 @@ gsk_gl_renderer_render_ops (GskGLRenderer *self)
 
       switch (kind)
         {
-        case OP_CHANGE_PROJECTION:
-          apply_projection_op (program, ptr);
+        case OP_CHANGE_TRANSFORM:
+          apply_transform_op (program, ptr);
           break;
 
-        case OP_CHANGE_MODELVIEW:
-          apply_modelview_op (program, ptr);
+        case OP_CHANGE_SCALE:
+          apply_scale_op (program, ptr);
+          break;
+
+        case OP_CHANGE_PROJECTION:
+          apply_projection_op (program, ptr);
           break;
 
         case OP_CHANGE_PROGRAM:
@@ -4224,7 +4202,9 @@ gsk_gl_renderer_do_render (GskRenderer           *renderer,
   init_projection_matrix (&projection, viewport);
   ops_set_projection (&self->op_builder, &projection);
   ops_set_viewport (&self->op_builder, viewport);
-  ops_set_modelview (&self->op_builder, gsk_transform_scale (NULL, scale_factor, scale_factor));
+  ops_set_modelview (&self->op_builder, 0, 0, scale_factor, scale_factor);
+  g_assert_cmpfloat (self->op_builder.scale_x, ==, scale_factor);
+  g_assert_cmpfloat (self->op_builder.scale_y, ==, scale_factor);
 
   /* Initial clip is self->render_region! */
   if (self->render_region != NULL)
@@ -4406,7 +4386,7 @@ gsk_gl_renderer_render_texture (GskRenderer           *renderer,
 
     ops_begin (&self->op_builder, OP_CLEAR);
     ops_set_texture (&self->op_builder, texture_id);
-    ops_set_modelview (&self->op_builder, NULL);
+    ops_set_modelview (&self->op_builder, 0, 0, 1, 1);
     ops_set_viewport (&self->op_builder, &GRAPHENE_RECT_INIT (0, 0, width, height));
     init_projection_matrix (&m, &GRAPHENE_RECT_INIT (0, 0, width, height));
     graphene_matrix_scale (&m, 1, -1, 1); /* Undo the scale init_projection_matrix() does again */

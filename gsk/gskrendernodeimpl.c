@@ -2745,10 +2745,30 @@ gsk_transform_node_draw (GskRenderNode *node,
                          cairo_t       *cr)
 {
   GskTransformNode *self = (GskTransformNode *) node;
+  GskTransformCategory category;
   float xx, yx, xy, yy, dx, dy;
   cairo_matrix_t ctm;
 
-  if (gsk_transform_get_category (self->transform) < GSK_TRANSFORM_CATEGORY_2D)
+  category = gsk_transform_get_category (self->transform);
+
+  if (category == GSK_TRANSFORM_CATEGORY_IDENTITY)
+    {
+      gsk_render_node_draw (self->child, cr);
+      return;
+    }
+  else if (category == GSK_TRANSFORM_CATEGORY_2D_TRANSLATE)
+    {
+      gsk_transform_to_translate (self->transform, &dx, &dy);
+
+      cairo_translate (cr, dx, dy);
+      gsk_render_node_draw (self->child, cr);
+      cairo_translate (cr, -dx, -dy);
+      return;
+    }
+  else if (category == GSK_TRANSFORM_CATEGORY_2D_AFFINE)
+    {
+    }
+  else if (gsk_transform_get_category (self->transform) < GSK_TRANSFORM_CATEGORY_2D)
     {
       cairo_set_source_rgb (cr, 255 / 255., 105 / 255., 180 / 255.);
       gsk_cairo_rectangle (cr, &node->bounds);
@@ -2756,6 +2776,8 @@ gsk_transform_node_draw (GskRenderNode *node,
       return;
     }
 
+  /*if (category == GSK_TRANSFORM_CATEGORY_2D_AFFINE)*/
+    {
   gsk_transform_to_2d (self->transform, &xx, &yx, &xy, &yy, &dx, &dy);
   cairo_matrix_init (&ctm, xx, yx, xy, yy, dx, dy);
   GSK_NOTE (CAIRO, g_message ("CTM = { .xx = %g, .yx = %g, .xy = %g, .yy = %g, .x0 = %g, .y0 = %g }",
@@ -2764,16 +2786,15 @@ gsk_transform_node_draw (GskRenderNode *node,
                             ctm.x0, ctm.y0));
   if (xx * yy == xy * yx)
     {
-      /* broken matrix here. This can happen during transitions
-       * (like when flipping an axis at the point where scale == 0)
-       * and just means that nothing should be drawn.
-       * But Cairo thows lots of ugly errors instead of silently
-       * going on. So We silently go on.
-       */
+       /*broken matrix here. This can happen during transitions*/
+       /*(like when flipping an axis at the point where scale == 0)*/
+       /*and just means that nothing should be drawn.*/
+       /*But Cairo thows lots of ugly errors instead of silently*/
+       /*going on. So We silently go on.*/
       return;
     }
   cairo_transform (cr, &ctm);
-
+  }
   gsk_render_node_draw (self->child, cr);
 }
 

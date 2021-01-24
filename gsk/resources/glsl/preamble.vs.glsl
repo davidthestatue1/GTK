@@ -1,6 +1,6 @@
 uniform mat4 u_projection;
-uniform mat4 u_modelview;
 uniform float u_alpha;
+uniform vec2 u_scale;
 
 #if defined(GSK_GLES) || defined(GSK_LEGACY)
 attribute vec2 aPosition;
@@ -11,6 +11,12 @@ _IN_ vec2 aPosition;
 _IN_ vec2 aUv;
 _OUT_ vec2 vUv;
 #endif
+
+vec4
+gsk_project(vec2 pos)
+{
+  return u_projection * vec4(u_scale * pos, 0.0, 1.0);
+}
 
 // amount is: top, right, bottom, left
 GskRoundedRect
@@ -39,16 +45,17 @@ gsk_rounded_rect_offset(inout GskRoundedRect r, vec2 offset)
   r.corner_points2.zw += offset;
 }
 
-void gsk_rounded_rect_transform(inout GskRoundedRect r, mat4 mat)
+void
+gsk_rounded_rect_transform(inout GskRoundedRect r)
 {
-  r.bounds.xy = (mat * vec4(r.bounds.xy, 0.0, 1.0)).xy;
-  r.bounds.zw = (mat * vec4(r.bounds.zw, 0.0, 1.0)).xy;
+  r.bounds.xy = u_scale * r.bounds.xy;
+  r.bounds.zw = u_scale * r.bounds.zw;
 
-  r.corner_points1.xy = (mat * vec4(r.corner_points1.xy, 0.0, 1.0)).xy;
-  r.corner_points1.zw = (mat * vec4(r.corner_points1.zw, 0.0, 1.0)).xy;
+  r.corner_points1.xy = (u_scale * r.corner_points1.xy);
+  r.corner_points1.zw = (u_scale * r.corner_points1.zw);
 
-  r.corner_points2.xy = (mat * vec4(r.corner_points2.xy, 0.0, 1.0)).xy;
-  r.corner_points2.zw = (mat * vec4(r.corner_points2.zw, 0.0, 1.0)).xy;
+  r.corner_points2.xy = (u_scale * r.corner_points2.xy);
+  r.corner_points2.zw = (u_scale * r.corner_points2.zw);
 }
 
 #if defined(GSK_LEGACY)

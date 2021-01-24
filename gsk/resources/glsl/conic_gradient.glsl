@@ -12,7 +12,7 @@ _OUT_ vec4 color_stops[6];
 _OUT_ float color_offsets[6];
 
 void main() {
-  gl_Position = u_projection * u_modelview * vec4(aPosition, 0.0, 1.0);
+  gl_Position = gsk_project(aPosition);
 
   // The -90 is because conics point to the top by default
   rotation = mod (u_rotation - 90.0, 360.0);
@@ -20,7 +20,7 @@ void main() {
     rotation += 360.0;
   rotation = PI / 180.0 * rotation;
 
-  center = (u_modelview * vec4(u_center, 0, 1)).xy;
+  center = u_scale * u_center;
 
   for (int i = 0; i < u_num_color_stops; i ++) {
     color_offsets[i] = u_color_stops[(i * 5) + 0];
